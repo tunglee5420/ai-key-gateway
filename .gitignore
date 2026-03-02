@@ -1,0 +1,13 @@
+node_modules/
+dist/
+*.log
+.DS_Store
+.env
+*.pid
+
+# Config files with sensitive data
+ai-key-gateway.config.json
+ai-key-gateway.subkeys.json
+
+# OpenSpec workflow
+openspec/
