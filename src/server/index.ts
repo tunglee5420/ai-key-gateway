@@ -1,13 +1,12 @@
 import express, { Request, Response, NextFunction } from 'express';
 import { loadConfig, interactiveSetup } from '../config';
-import { createSubKeyStorage, SubKeyStorage, createSessionStorage, SessionStorage } from '../storage';
+import { createSubKeyStorage, SubKeyStorage } from '../storage';
 import { createProvider, getDefaultModel } from '../providers/factory';
 import { AIProvider } from '../providers';
 import { generateRequestId, createLogger, LogStage } from '../logger';
 
 export const app = express();
 export let subKeyStorage: SubKeyStorage;
-export let sessionStorage: SessionStorage;
 export let provider: AIProvider;
 export let defaultModel: string | undefined;
 
@@ -76,7 +75,6 @@ app.get('/health', (req: Request, res: Response) => {
 app.post('/v1/chat/completions', requireProvider, authMiddleware, async (req: Request, res: Response) => {
   const logger = (req as any).logger;
   const startTime = Date.now();
-  const subKeyId = (req as any).subKeyId;
 
   logger.logRequestReceived(req.method, req.path, req.body.model);
 
@@ -89,16 +87,6 @@ app.post('/v1/chat/completions', requireProvider, authMiddleware, async (req: Re
       requestBody.model = defaultModel || getDefaultModel(provider.type);
     }
 
-    // Get session messages and prepend to request
-    const session = sessionStorage.getSession(subKeyId);
-    if (session && session.messages.length > 0) {
-      const sessionMessages = session.messages.map(m => ({
-        role: m.role,
-        content: m.content
-      }));
-      requestBody.messages = [...sessionMessages, ...(requestBody.messages || [])];
-    }
-
     logger.logProviderRequest(provider.type, requestBody.model, requestBody.messages?.length || 0);
 
     if (isStream) {
@@ -106,6 +94,7 @@ app.post('/v1/chat/completions', requireProvider, authMiddleware, async (req: Re
       res.setHeader('Cache-Control', 'no-cache');
       res.setHeader('Connection', 'keep-alive');
       res.setHeader('X-Accel-Buffering', 'no');
+      res.flushHeaders();
 
       const streamObj = await provider.streamChat(requestBody);
       const reader = streamObj.getReader();
@@ -118,29 +107,18 @@ app.post('/v1/chat/completions', requireProvider, authMiddleware, async (req: Re
         const chunk = decoder.decode(value, { stream: true });
         fullContent += chunk;
         res.write(chunk);
+        // Flush the response to ensure immediate delivery
+        if (typeof (res as any).flush === 'function') {
+          (res as any).flush();
+        }
       }
       res.end();
-
-      // Save messages to session after stream completes
-      const userMessage = req.body.messages?.[req.body.messages.length - 1]?.content || '';
-      if (userMessage) {
-        sessionStorage.appendMessage(subKeyId, 'user', userMessage);
-        sessionStorage.appendMessage(subKeyId, 'assistant', fullContent);
-      }
 
       const duration = Date.now() - startTime;
       logger.logProviderResponse(200, duration);
       logger.logResponseSent(200, duration);
     } else {
       const response = await provider.chat(requestBody);
-
-      // Save messages to session
-      const userMessage = req.body.messages?.[req.body.messages.length - 1]?.content || '';
-      const assistantMessage = response.choices[0]?.message?.content || '';
-      if (userMessage) {
-        sessionStorage.appendMessage(subKeyId, 'user', userMessage);
-        sessionStorage.appendMessage(subKeyId, 'assistant', assistantMessage);
-      }
 
       const duration = Date.now() - startTime;
       logger.logProviderResponse(200, duration);
@@ -191,7 +169,6 @@ app.post('/v1/embeddings', requireProvider, authMiddleware, async (req: Request,
 app.post('/v1/messages', requireProvider, authMiddleware, async (req: Request, res: Response) => {
   const logger = (req as any).logger;
   const startTime = Date.now();
-  const subKeyId = (req as any).subKeyId;
 
   const { model: reqModel, messages } = req.body;
   const effectiveModel = reqModel || defaultModel || getDefaultModel(provider.type);
@@ -201,20 +178,10 @@ app.post('/v1/messages', requireProvider, authMiddleware, async (req: Request, r
   try {
     const { model, messages, max_tokens, temperature, stream } = req.body;
 
-    // Get session messages and prepend to request
-    const session = sessionStorage.getSession(subKeyId);
     let requestMessages = messages.map((m: any) => ({
       role: m.role === 'user' ? 'user' : m.role === 'assistant' ? 'assistant' : 'system',
       content: m.content
     }));
-
-    if (session && session.messages.length > 0) {
-      const sessionMessages = session.messages.map(m => ({
-        role: m.role,
-        content: m.content
-      }));
-      requestMessages = [...sessionMessages, ...requestMessages];
-    }
 
     const chatRequest = {
       model: model || defaultModel || getDefaultModel(provider.type),
@@ -230,6 +197,7 @@ app.post('/v1/messages', requireProvider, authMiddleware, async (req: Request, r
       res.setHeader('Content-Type', 'text/event-stream');
       res.setHeader('Cache-Control', 'no-cache');
       res.setHeader('Connection', 'keep-alive');
+      res.flushHeaders();
 
       const streamObj = await provider.streamChat(chatRequest);
       const reader = streamObj.getReader();
@@ -242,25 +210,14 @@ app.post('/v1/messages', requireProvider, authMiddleware, async (req: Request, r
         const chunk = decoder.decode(value);
         fullContent += chunk;
         res.write(chunk);
+        // Flush the response to ensure immediate delivery
+        if (typeof (res as any).flush === 'function') {
+          (res as any).flush();
+        }
       }
       res.end();
-
-      // Save messages to session
-      const userMessage = messages?.[messages.length - 1]?.content || '';
-      if (userMessage) {
-        sessionStorage.appendMessage(subKeyId, 'user', userMessage);
-        sessionStorage.appendMessage(subKeyId, 'assistant', fullContent);
-      }
     } else {
       const response = await provider.chat(chatRequest);
-
-      // Save messages to session
-      const userMessage = messages?.[messages.length - 1]?.content || '';
-      const assistantMessage = response.choices[0]?.message?.content || '';
-      if (userMessage) {
-        sessionStorage.appendMessage(subKeyId, 'user', userMessage);
-        sessionStorage.appendMessage(subKeyId, 'assistant', assistantMessage);
-      }
 
       // Convert back to Anthropic format
       const anthropicResponse = {
@@ -305,7 +262,6 @@ export async function startServer() {
 
   defaultModel = config.model;
   subKeyStorage = createSubKeyStorage();
-  sessionStorage = createSessionStorage();
   provider = createProvider(config.provider!);
 
   console.log('\n╔═══════════════════════════════════════╗');
