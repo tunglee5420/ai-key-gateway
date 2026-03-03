@@ -49,20 +49,73 @@ export class MinimaxProvider implements AIProvider {
       }
     );
 
+    const self = this;
+
     return new ReadableStream({
       start(controller) {
         const reader = response.data;
+        
         reader.on('data', (chunk: Buffer) => {
-          controller.enqueue(chunk);
+          const lines = chunk.toString().split('\n').filter(line => line.trim() !== '');
+          
+          for (const line of lines) {
+            if (!line.startsWith('data: ')) continue;
+            
+            const data = line.slice(6);
+            if (data === '[DONE]') {
+              controller.enqueue(new TextEncoder().encode('data: [DONE]\n\n'));
+              continue;
+            }
+            
+            try {
+              const parsed = JSON.parse(data);
+              // Convert MiniMax format to OpenAI format
+              const converted = self.convertChunkToOpenAI(parsed);
+              controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(converted)}\n\n`));
+            } catch (e) {
+              // Skip invalid JSON
+            }
+          }
         });
+        
         reader.on('end', () => {
           controller.close();
         });
+        
         reader.on('error', (err: Error) => {
           controller.error(err);
         });
       }
     });
+  }
+
+  private convertChunkToOpenAI(chunk: any): any {
+    // MiniMax returns content in reasoning_content, need to move to content
+    const choices = chunk.choices?.map((choice: any) => {
+      const delta = choice.delta || {};
+      
+      // If content is empty but reasoning_content exists, use reasoning_content as content
+      let content = delta.content || '';
+      const reasoningContent = delta.reasoning_content || '';
+      
+      // For MiniMax, reasoning_content is the actual text response
+      if (!content && reasoningContent) {
+        content = reasoningContent;
+      }
+      
+      return {
+        ...choice,
+        delta: {
+          ...delta,
+          content: content
+        }
+      };
+    });
+    
+    return {
+      ...chunk,
+      choices
+    };
   }
 
   async embeddings(request: EmbeddingsRequest): Promise<EmbeddingsResponse> {

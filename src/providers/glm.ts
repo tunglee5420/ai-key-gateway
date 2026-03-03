@@ -92,17 +92,16 @@ export class GLMProvider implements AIProvider {
   }
 
   private convertToOpenAIStream(stream: any): ReadableStream {
-    // Simplified - in production would properly convert SSE stream
-    const reader = stream.data;
+    // stream is already response.data from axios
     return new ReadableStream({
       start(controller) {
-        reader.on('data', (chunk: Buffer) => {
+        stream.on('data', (chunk: Buffer) => {
           controller.enqueue(chunk);
         });
-        reader.on('end', () => {
+        stream.on('end', () => {
           controller.close();
         });
-        reader.on('error', (err: Error) => {
+        stream.on('error', (err: Error) => {
           controller.error(err);
         });
       }

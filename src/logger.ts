@@ -1,4 +1,6 @@
 import { randomUUID } from 'crypto';
+import fs from 'fs-extra';
+import path from 'path';
 
 // Log stages enum
 export enum LogStage {
@@ -24,6 +26,18 @@ export interface LogEntry {
   details?: string;
 }
 
+// Log file path - store in current directory
+const LOG_DIR = path.join(process.cwd(), 'logs');
+const LOG_FILE = path.join(LOG_DIR, 'access.log');
+
+// Ensure log directory exists
+fs.ensureDirSync(LOG_DIR);
+
+// Append log entry to file
+function appendToFile(entry: LogEntry): void {
+  fs.appendFileSync(LOG_FILE, JSON.stringify(entry) + '\n');
+}
+
 // Generate unique request ID
 export function generateRequestId(): string {
   return randomUUID().substring(0, 8);
@@ -38,7 +52,9 @@ export function truncateContent(content: string, maxLength: number = 100): strin
 
 // Structured logger function
 export function log(entry: LogEntry): void {
-  console.log(JSON.stringify(entry));
+  const json = JSON.stringify(entry);
+  console.log(json);
+  appendToFile(entry);
 }
 
 // Convenience logging functions
@@ -53,13 +69,13 @@ export function createLogger(requestId: string) {
       });
     },
 
-    logRequestReceived: (method: string, path: string, model?: string) => {
+    logRequestReceived: (method: string, reqPath: string, model?: string) => {
       log({
         timestamp: new Date().toISOString(),
         requestId,
         stage: LogStage.REQUEST_RECEIVED,
         model,
-        details: `${method} ${path}`
+        details: `${method} ${reqPath}`
       });
     },
 
